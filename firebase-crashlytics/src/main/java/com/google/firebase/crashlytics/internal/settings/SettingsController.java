@@ -165,11 +165,22 @@ public class SettingsController implements SettingsProvider {
     // We need to bypass the cache if this is the first time a new build has run so the
     // backend will know about it.
     if (!buildInstanceIdentifierChanged()) {
-      final Settings cachedSettings = getCachedSettingsData(cacheBehavior);
+      final Task<Settings> cachedSettings = getCachedSettingsData(cacheBehavior, executor);
+
       if (cachedSettings != null) {
-        settings.set(cachedSettings);
-        settingsTask.get().trySetResult(cachedSettings);
-        return Tasks.forResult(null);
+        return cachedSettings.onSuccessTask(
+            executor,
+            new SuccessContinuation<Settings, Void>() {
+              @NonNull
+              @Override
+              public Task<Void> then(Settings cachedSettings) throws Exception {
+
+                settings.set(cachedSettings);
+                settingsTask.get().trySetResult(cachedSettings);
+
+                return Tasks.forResult(null);
+              }
+            });
       }
     }
 
@@ -178,16 +189,33 @@ public class SettingsController implements SettingsProvider {
     // This has been true in production for some time, though, so no rush to "fix" it.
 
     // The cached settings are too old, so if there are expired settings, use those for now.
-    final Settings expiredSettings =
-        getCachedSettingsData(SettingsCacheBehavior.IGNORE_CACHE_EXPIRATION);
-    if (expiredSettings != null) {
-      settings.set(expiredSettings);
-      settingsTask.get().trySetResult(expiredSettings);
-    }
+    Task<Settings> expiredSettings =
+        getCachedSettingsData(SettingsCacheBehavior.IGNORE_CACHE_EXPIRATION, executor)
+            .onSuccessTask(
+                executor,
+                new SuccessContinuation<Settings, Settings>() {
+                  @NonNull
+                  @Override
+                  public Task<Settings> then(Settings expiredSettings) {
+                    if (expiredSettings != null) {
+                      settings.set(expiredSettings);
+                      settingsTask.get().trySetResult(expiredSettings);
+                    }
+                    return Tasks.forResult(expiredSettings);
+                  }
+                });
 
     // Kick off fetching fresh settings.
-    return dataCollectionArbiter
-        .waitForDataCollectionPermission(executor)
+    return expiredSettings
+        .onSuccessTask(
+            executor,
+            new SuccessContinuation<Settings, Void>() {
+              @NonNull
+              @Override
+              public Task<Void> then(Settings settings) {
+                return dataCollectionArbiter.waitForDataCollectionPermission(executor);
+              }
+            })
         .onSuccessTask(
             executor,
             new SuccessContinuation<Void, Void>() {
@@ -220,40 +248,52 @@ public class SettingsController implements SettingsProvider {
             });
   }
 
-  private Settings getCachedSettingsData(SettingsCacheBehavior cacheBehavior) {
-    Settings toReturn = null;
+  private Task<Settings> getCachedSettingsData(
+      SettingsCacheBehavior cacheBehavior, Executor executor) {
 
-    try {
-      if (!SettingsCacheBehavior.SKIP_CACHE_LOOKUP.equals(cacheBehavior)) {
-        final JSONObject settingsJson = cachedSettingsIo.readCachedSettings();
+    TaskCompletionSource<Settings> completionSource = new TaskCompletionSource<Settings>();
 
-        if (settingsJson != null) {
-          final Settings settings = settingsJsonParser.parseSettingsJson(settingsJson);
+    executor.execute(
+        new Runnable() {
+          @Override
+          public void run() {
+            Settings toReturn = null;
 
-          if (settings != null) {
-            logSettings(settingsJson, "Loaded cached settings: ");
+            try {
+              if (!SettingsCacheBehavior.SKIP_CACHE_LOOKUP.equals(cacheBehavior)) {
+                final JSONObject settingsJson = cachedSettingsIo.readCachedSettings();
 
-            final long currentTimeMillis = currentTimeProvider.getCurrentTimeMillis();
+                if (settingsJson != null) {
+                  final Settings settings = settingsJsonParser.parseSettingsJson(settingsJson);
 
-            if (SettingsCacheBehavior.IGNORE_CACHE_EXPIRATION.equals(cacheBehavior)
-                || !settings.isExpired(currentTimeMillis)) {
-              toReturn = settings;
-              Logger.getLogger().v("Returning cached settings.");
-            } else {
-              Logger.getLogger().v("Cached settings have expired.");
+                  if (settings != null) {
+                    logSettings(settingsJson, "Loaded cached settings: ");
+
+                    final long currentTimeMillis = currentTimeProvider.getCurrentTimeMillis();
+
+                    if (SettingsCacheBehavior.IGNORE_CACHE_EXPIRATION.equals(cacheBehavior)
+                        || !settings.isExpired(currentTimeMillis)) {
+                      toReturn = settings;
+                      Logger.getLogger().v("Returning cached settings.");
+                    } else {
+                      Logger.getLogger().v("Cached settings have expired.");
+                    }
+                  } else {
+                    Logger.getLogger().e("Failed to parse cached settings data.", null);
+                  }
+                } else {
+                  Logger.getLogger().d("No cached settings data found.");
+                }
+              }
+            } catch (Exception e) {
+              Logger.getLogger().e("Failed to get cached settings", e);
             }
-          } else {
-            Logger.getLogger().e("Failed to parse cached settings data.", null);
-          }
-        } else {
-          Logger.getLogger().d("No cached settings data found.");
-        }
-      }
-    } catch (Exception e) {
-      Logger.getLogger().e("Failed to get cached settings", e);
-    }
 
-    return toReturn;
+            completionSource.setResult(toReturn);
+          }
+        });
+
+    return completionSource.getTask();
   }
 
   private void logSettings(JSONObject json, String message) throws JSONException {

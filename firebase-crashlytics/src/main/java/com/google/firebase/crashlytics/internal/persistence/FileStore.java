@@ -60,33 +60,105 @@ public class FileStore {
   private static final String PRIORITY_REPORTS_PATH = "priority-reports";
   private static final String NATIVE_REPORTS_PATH = "native-reports";
 
-  private final File filesDir;
-  private final File crashlyticsDir;
-  private final File sessionsDir;
-  private final File reportsDir;
-  private final File priorityReportsDir;
-  private final File nativeReportsDir;
+  private volatile File filesDir;
+  private volatile File crashlyticsDir;
+  private volatile File sessionsDir;
+  private volatile File reportsDir;
+  private volatile File priorityReportsDir;
+  private volatile File nativeReportsDir;
+  private final String crashlyticsPath;
+  private final Object fileStoreSync = new Object();
+  private final Context context;
 
   public FileStore(Context context) {
-    filesDir = context.getFilesDir();
-    String crashlyticsPath =
+    this.context = context;
+    crashlyticsPath =
         useV2FileSystem()
             ? CRASHLYTICS_PATH_V2 + File.pathSeparator + sanitizeName(Application.getProcessName())
             : CRASHLYTICS_PATH_V1;
-    crashlyticsDir = prepareBaseDir(new File(filesDir, crashlyticsPath));
-    sessionsDir = prepareBaseDir(new File(crashlyticsDir, SESSIONS_PATH));
-    reportsDir = prepareBaseDir(new File(crashlyticsDir, REPORTS_PATH));
-    priorityReportsDir = prepareBaseDir(new File(crashlyticsDir, PRIORITY_REPORTS_PATH));
-    nativeReportsDir = prepareBaseDir(new File(crashlyticsDir, NATIVE_REPORTS_PATH));
+  }
+
+  private File getFilesDir() {
+    if (filesDir == null) {
+      synchronized (fileStoreSync) {
+        if (filesDir == null) {
+          filesDir = context.getFilesDir();
+        }
+      }
+    }
+
+    return filesDir;
+  }
+
+  private File getCrashlyticsDir() {
+    if (crashlyticsDir == null) {
+      synchronized (fileStoreSync) {
+        if (crashlyticsDir == null) {
+          crashlyticsDir = prepareBaseDir(new File(getFilesDir(), crashlyticsPath));
+        }
+      }
+    }
+
+    return crashlyticsDir;
+  }
+
+  private File getSessionsDir() {
+    if (sessionsDir == null) {
+      synchronized (fileStoreSync) {
+        if (sessionsDir == null) {
+          sessionsDir = prepareBaseDir(new File(getCrashlyticsDir(), SESSIONS_PATH));
+        }
+      }
+    }
+
+    return sessionsDir;
+  }
+
+  private File getReportsDir() {
+    if (reportsDir == null) {
+      synchronized (fileStoreSync) {
+        if (reportsDir == null) {
+          reportsDir = prepareBaseDir(new File(getCrashlyticsDir(), REPORTS_PATH));
+        }
+      }
+    }
+
+    return reportsDir;
+  }
+
+  private File getPriorityReportsDir() {
+    if (priorityReportsDir == null) {
+      synchronized (fileStoreSync) {
+        if (priorityReportsDir == null) {
+          priorityReportsDir = prepareBaseDir(new File(getCrashlyticsDir(), PRIORITY_REPORTS_PATH));
+        }
+      }
+    }
+
+    return priorityReportsDir;
+  }
+
+  private File getNativeReportsDir() {
+    if (nativeReportsDir == null) {
+      synchronized (fileStoreSync) {
+        if (nativeReportsDir == null) {
+          nativeReportsDir = prepareBaseDir(new File(getCrashlyticsDir(), NATIVE_REPORTS_PATH));
+        }
+      }
+    }
+
+    return nativeReportsDir;
   }
 
   @VisibleForTesting
   public void deleteAllCrashlyticsFiles() {
-    recursiveDelete(crashlyticsDir);
+    recursiveDelete(getCrashlyticsDir());
   }
 
   /** Clean up files from previous file systems. */
   public void cleanupPreviousFileSystems() {
+    File filesDir = getFilesDir();
+
     // Clean up pre-versioned file systems.
     cleanupDir(new File(filesDir, ".com.google.firebase.crashlytics"));
     cleanupDir(new File(filesDir, ".com.google.firebase.crashlytics-ndk"));
@@ -113,18 +185,22 @@ public class FileStore {
     return fileOrDirectory.delete();
   }
 
-  /** @return internal File used by Crashlytics, that is not specific to a session */
+  /**
+   * @return internal File used by Crashlytics, that is not specific to a session
+   */
   public File getCommonFile(String filename) {
-    return new File(crashlyticsDir, filename);
+    return new File(getCrashlyticsDir(), filename);
   }
 
-  /** @return all common (non session specific) files matching the given filter. */
+  /**
+   * @return all common (non session specific) files matching the given filter.
+   */
   public List<File> getCommonFiles(FilenameFilter filter) {
-    return safeArrayToList(crashlyticsDir.listFiles(filter));
+    return safeArrayToList(getCrashlyticsDir().listFiles(filter));
   }
 
   private File getSessionDir(String sessionId) {
-    return prepareDir(new File(sessionsDir, sessionId));
+    return prepareDir(new File(getSessionsDir(), sessionId));
   }
 
   /**
@@ -144,36 +220,36 @@ public class FileStore {
   }
 
   public boolean deleteSessionFiles(String sessionId) {
-    File sessionDir = new File(sessionsDir, sessionId);
+    File sessionDir = new File(getSessionsDir(), sessionId);
     return recursiveDelete(sessionDir);
   }
 
   public List<String> getAllOpenSessionIds() {
-    return safeArrayToList(sessionsDir.list());
+    return safeArrayToList(getSessionsDir().list());
   }
 
   public File getReport(String sessionId) {
-    return new File(reportsDir, sessionId);
+    return new File(getReportsDir(), sessionId);
   }
 
   public List<File> getReports() {
-    return safeArrayToList(reportsDir.listFiles());
+    return safeArrayToList(getReportsDir().listFiles());
   }
 
   public File getPriorityReport(String sessionId) {
-    return new File(priorityReportsDir, sessionId);
+    return new File(getPriorityReportsDir(), sessionId);
   }
 
   public List<File> getPriorityReports() {
-    return safeArrayToList(priorityReportsDir.listFiles());
+    return safeArrayToList(getPriorityReportsDir().listFiles());
   }
 
   public File getNativeReport(String sessionId) {
-    return new File(nativeReportsDir, sessionId);
+    return new File(getNativeReportsDir(), sessionId);
   }
 
   public List<File> getNativeReports() {
-    return safeArrayToList(nativeReportsDir.listFiles());
+    return safeArrayToList(getNativeReportsDir().listFiles());
   }
 
   private static File prepareDir(File file) {
@@ -182,7 +258,7 @@ public class FileStore {
     return file;
   }
 
-  private static synchronized File prepareBaseDir(File file) {
+  private static File prepareBaseDir(File file) {
     if (file.exists()) {
       if (file.isDirectory()) {
         return file;

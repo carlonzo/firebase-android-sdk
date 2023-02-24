@@ -29,13 +29,24 @@ import org.json.JSONObject;
 public class CachedSettingsIo {
   private static final String SETTINGS_CACHE_FILENAME = "com.crashlytics.settings.json";
 
-  private final File cachedSettingsFile;
+  private volatile File cachedSettingsFile;
+  private final FileStore fileStore;
+
+  private final Object settingsFileSync = new Object();
 
   public CachedSettingsIo(FileStore fileStore) {
-    this.cachedSettingsFile = fileStore.getCommonFile(SETTINGS_CACHE_FILENAME);
+    this.fileStore = fileStore;
   }
 
   private File getSettingsFile() {
+    if (cachedSettingsFile == null) {
+      synchronized (settingsFileSync) {
+        if (cachedSettingsFile == null) {
+          cachedSettingsFile = fileStore.getCommonFile(SETTINGS_CACHE_FILENAME);
+        }
+      }
+    }
+
     return cachedSettingsFile;
   }
 
