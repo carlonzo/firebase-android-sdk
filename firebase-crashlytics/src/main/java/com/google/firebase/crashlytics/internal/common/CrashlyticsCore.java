@@ -38,11 +38,7 @@ import com.google.firebase.crashlytics.internal.stacktrace.RemoveRepeatsStrategy
 import com.google.firebase.crashlytics.internal.stacktrace.StackTraceTrimmingStrategy;
 import java.util.Map;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 @SuppressWarnings("PMD.NullAssignment")
 public class CrashlyticsCore {
@@ -175,27 +171,10 @@ public class CrashlyticsCore {
               nativeComponent,
               analyticsEventLogger);
 
-      // If the file is present at this point, then the previous run's initialization
-      // did not complete, and we want to perform initialization synchronously this time.
-      // We make this check early here because we want to guarantee that the async
-      // startup thread we're about to launch doesn't affect the value.
-      final boolean initializeSynchronously = didPreviousInitializationFail();
-
       checkForPreviousCrash();
 
       controller.enableExceptionHandling(
           sessionIdentifier, Thread.getDefaultUncaughtExceptionHandler(), settingsProvider);
-
-      if (initializeSynchronously && CommonUtils.canTryConnection(context)) {
-        Logger.getLogger()
-            .d(
-                "Crashlytics did not finish previous background "
-                    + "initialization. Initializing synchronously.");
-        // finishInitSynchronously blocks the UI thread while it finishes background init.
-        finishInitSynchronously(settingsProvider);
-        // Returning false here to stop the rest of init from being run in the background thread.
-        return false;
-      }
     } catch (Exception e) {
       Logger.getLogger()
           .e("Crashlytics was not started due to an exception during initialization", e);
@@ -221,6 +200,13 @@ public class CrashlyticsCore {
 
   /** Performs background initialization synchronously on the calling thread. */
   private Task<Void> doBackgroundInitialization(SettingsProvider settingsProvider) {
+    if (didPreviousInitializationFail()) {
+      Logger.getLogger()
+          .d(
+              "Crashlytics did not finish previous background "
+                  + "initialization. Will retry initialization.");
+    }
+
     // create the marker for this run
     markInitializationStarted();
 
@@ -400,38 +386,6 @@ public class CrashlyticsCore {
   // endregion
 
   // region Instance utilities
-
-  /**
-   * When a startup crash occurs, Crashlytics must lock on the main thread and complete
-   * initializaiton to upload crash result. 4 seconds is chosen for the lock to prevent ANR
-   */
-  private void finishInitSynchronously(SettingsProvider settingsProvider) {
-
-    final Runnable runnable =
-        new Runnable() {
-          @Override
-          public void run() {
-            doBackgroundInitialization(settingsProvider);
-          }
-        };
-
-    final Future<?> future = crashHandlerExecutor.submit(runnable);
-
-    Logger.getLogger()
-        .d(
-            "Crashlytics detected incomplete initialization on previous app launch."
-                + " Will initialize synchronously.");
-
-    try {
-      future.get(DEFAULT_MAIN_HANDLER_TIMEOUT_SEC, TimeUnit.SECONDS);
-    } catch (InterruptedException e) {
-      Logger.getLogger().e("Crashlytics was interrupted during initialization.", e);
-    } catch (ExecutionException e) {
-      Logger.getLogger().e("Crashlytics encountered a problem during initialization.", e);
-    } catch (TimeoutException e) {
-      Logger.getLogger().e("Crashlytics timed out during initialization.", e);
-    }
-  }
 
   /** Synchronous call to mark start of initialization */
   void markInitializationStarted() {

@@ -62,10 +62,13 @@ public class FileStore {
 
   private final File filesDir;
   private final File crashlyticsDir;
-  private final File sessionsDir;
-  private final File reportsDir;
-  private final File priorityReportsDir;
-  private final File nativeReportsDir;
+
+  // Lazily initialized directories to avoid disk I/O on the main thread.
+  private volatile File sessionsDir;
+  private volatile File reportsDir;
+  private volatile File priorityReportsDir;
+  private volatile File nativeReportsDir;
+  private volatile boolean baseDirPrepared;
 
   public FileStore(Context context) {
     filesDir = context.getFilesDir();
@@ -73,15 +76,32 @@ public class FileStore {
         useV2FileSystem()
             ? CRASHLYTICS_PATH_V2 + File.pathSeparator + sanitizeName(Application.getProcessName())
             : CRASHLYTICS_PATH_V1;
-    crashlyticsDir = prepareBaseDir(new File(filesDir, crashlyticsPath));
-    sessionsDir = prepareBaseDir(new File(crashlyticsDir, SESSIONS_PATH));
-    reportsDir = prepareBaseDir(new File(crashlyticsDir, REPORTS_PATH));
-    priorityReportsDir = prepareBaseDir(new File(crashlyticsDir, PRIORITY_REPORTS_PATH));
-    nativeReportsDir = prepareBaseDir(new File(crashlyticsDir, NATIVE_REPORTS_PATH));
+    // Only compute the path, do not touch the file system yet.
+    crashlyticsDir = new File(filesDir, crashlyticsPath);
+  }
+
+  /**
+   * Ensures the base crashlytics directory and all subdirectories exist on disk. This is called
+   * lazily on first access to avoid disk I/O on the main thread during initialization.
+   */
+  private void ensureDirsExist() {
+    if (!baseDirPrepared) {
+      synchronized (this) {
+        if (!baseDirPrepared) {
+          prepareBaseDir(crashlyticsDir);
+          sessionsDir = prepareBaseDir(new File(crashlyticsDir, SESSIONS_PATH));
+          reportsDir = prepareBaseDir(new File(crashlyticsDir, REPORTS_PATH));
+          priorityReportsDir = prepareBaseDir(new File(crashlyticsDir, PRIORITY_REPORTS_PATH));
+          nativeReportsDir = prepareBaseDir(new File(crashlyticsDir, NATIVE_REPORTS_PATH));
+          baseDirPrepared = true;
+        }
+      }
+    }
   }
 
   @VisibleForTesting
   public void deleteAllCrashlyticsFiles() {
+    ensureDirsExist();
     recursiveDelete(crashlyticsDir);
   }
 
@@ -115,15 +135,18 @@ public class FileStore {
 
   /** @return internal File used by Crashlytics, that is not specific to a session */
   public File getCommonFile(String filename) {
+    ensureDirsExist();
     return new File(crashlyticsDir, filename);
   }
 
   /** @return all common (non session specific) files matching the given filter. */
   public List<File> getCommonFiles(FilenameFilter filter) {
+    ensureDirsExist();
     return safeArrayToList(crashlyticsDir.listFiles(filter));
   }
 
   private File getSessionDir(String sessionId) {
+    ensureDirsExist();
     return prepareDir(new File(sessionsDir, sessionId));
   }
 
@@ -140,39 +163,48 @@ public class FileStore {
   }
 
   public File getNativeSessionDir(String sessionId) {
+    // ensureDirsExist() is already called by getSessionDir.
     return prepareDir(new File(getSessionDir(sessionId), NATIVE_SESSION_SUBDIR));
   }
 
   public boolean deleteSessionFiles(String sessionId) {
+    ensureDirsExist();
     File sessionDir = new File(sessionsDir, sessionId);
     return recursiveDelete(sessionDir);
   }
 
   public List<String> getAllOpenSessionIds() {
+    ensureDirsExist();
     return safeArrayToList(sessionsDir.list());
   }
 
   public File getReport(String sessionId) {
+    ensureDirsExist();
     return new File(reportsDir, sessionId);
   }
 
   public List<File> getReports() {
+    ensureDirsExist();
     return safeArrayToList(reportsDir.listFiles());
   }
 
   public File getPriorityReport(String sessionId) {
+    ensureDirsExist();
     return new File(priorityReportsDir, sessionId);
   }
 
   public List<File> getPriorityReports() {
+    ensureDirsExist();
     return safeArrayToList(priorityReportsDir.listFiles());
   }
 
   public File getNativeReport(String sessionId) {
+    ensureDirsExist();
     return new File(nativeReportsDir, sessionId);
   }
 
   public List<File> getNativeReports() {
+    ensureDirsExist();
     return safeArrayToList(nativeReportsDir.listFiles());
   }
 
@@ -182,7 +214,7 @@ public class FileStore {
     return file;
   }
 
-  private static synchronized File prepareBaseDir(File file) {
+  private static File prepareBaseDir(File file) {
     if (file.exists()) {
       if (file.isDirectory()) {
         return file;
