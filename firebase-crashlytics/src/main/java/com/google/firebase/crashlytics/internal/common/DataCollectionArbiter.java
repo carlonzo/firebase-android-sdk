@@ -31,8 +31,11 @@ public class DataCollectionArbiter {
   private static final String FIREBASE_CRASHLYTICS_COLLECTION_ENABLED =
       "firebase_crashlytics_collection_enabled";
 
-  private final SharedPreferences sharedPreferences;
   private final FirebaseApp firebaseApp;
+
+  // Lazily initialized to avoid disk I/O on the main thread.
+  private volatile SharedPreferences sharedPreferences;
+  private volatile boolean initialized;
 
   // State for waitForDataCollectionEnabled().
   private final Object taskLock = new Object();
@@ -51,27 +54,52 @@ public class DataCollectionArbiter {
       new TaskCompletionSource<>();
 
   public DataCollectionArbiter(FirebaseApp app) {
-    final Context applicationContext = app.getApplicationContext();
-
     firebaseApp = app;
-    sharedPreferences = CommonUtils.getSharedPrefs(applicationContext);
+  }
 
-    Boolean dataCollectionEnabled = getDataCollectionValueFromSharedPreferences();
-    if (dataCollectionEnabled == null) {
-      dataCollectionEnabled = getDataCollectionValueFromManifest(applicationContext);
+  private SharedPreferences getSharedPreferences() {
+    if (sharedPreferences == null) {
+      synchronized (this) {
+        if (sharedPreferences == null) {
+          sharedPreferences = CommonUtils.getSharedPrefs(firebaseApp.getApplicationContext());
+        }
+      }
     }
+    return sharedPreferences;
+  }
 
-    crashlyticsDataCollectionEnabled = dataCollectionEnabled;
+  private void ensureInitialized() {
+    if (!initialized) {
+      synchronized (this) {
+        if (!initialized) {
+          final Context applicationContext = firebaseApp.getApplicationContext();
 
-    synchronized (taskLock) {
-      if (isAutomaticDataCollectionEnabled()) {
-        dataCollectionEnabledTask.trySetResult(null);
-        taskResolved = true;
+          Boolean dataCollectionEnabled = getDataCollectionValueFromSharedPreferences();
+          if (dataCollectionEnabled == null) {
+            dataCollectionEnabled = getDataCollectionValueFromManifest(applicationContext);
+          }
+
+          crashlyticsDataCollectionEnabled = dataCollectionEnabled;
+
+          synchronized (taskLock) {
+            if (isAutomaticDataCollectionEnabledInternal()) {
+              dataCollectionEnabledTask.trySetResult(null);
+              taskResolved = true;
+            }
+          }
+
+          initialized = true;
+        }
       }
     }
   }
 
   public synchronized boolean isAutomaticDataCollectionEnabled() {
+    ensureInitialized();
+    return isAutomaticDataCollectionEnabledInternal();
+  }
+
+  private boolean isAutomaticDataCollectionEnabledInternal() {
     final boolean dataCollectionEnabled =
         crashlyticsDataCollectionEnabled != null
             ? crashlyticsDataCollectionEnabled
@@ -81,6 +109,7 @@ public class DataCollectionArbiter {
   }
 
   public synchronized void setCrashlyticsDataCollectionEnabled(@Nullable Boolean enabled) {
+    ensureInitialized();
     if (enabled != null) {
       setInManifest = false;
     }
@@ -89,7 +118,7 @@ public class DataCollectionArbiter {
         (enabled != null)
             ? enabled
             : getDataCollectionValueFromManifest(firebaseApp.getApplicationContext());
-    storeDataCollectionValueInSharedPreferences(sharedPreferences, enabled);
+    storeDataCollectionValueInSharedPreferences(getSharedPreferences(), enabled);
 
     synchronized (taskLock) {
       if (isAutomaticDataCollectionEnabled()) {
@@ -107,6 +136,7 @@ public class DataCollectionArbiter {
   }
 
   public Task<Void> waitForAutomaticDataCollectionEnabled() {
+    ensureInitialized();
     synchronized (taskLock) {
       return dataCollectionEnabledTask.getTask();
     }
@@ -152,9 +182,10 @@ public class DataCollectionArbiter {
 
   @Nullable
   private Boolean getDataCollectionValueFromSharedPreferences() {
-    if (sharedPreferences.contains(FIREBASE_CRASHLYTICS_COLLECTION_ENABLED)) {
+    SharedPreferences prefs = getSharedPreferences();
+    if (prefs.contains(FIREBASE_CRASHLYTICS_COLLECTION_ENABLED)) {
       setInManifest = false;
-      return sharedPreferences.getBoolean(FIREBASE_CRASHLYTICS_COLLECTION_ENABLED, true);
+      return prefs.getBoolean(FIREBASE_CRASHLYTICS_COLLECTION_ENABLED, true);
     }
     return null;
   }
