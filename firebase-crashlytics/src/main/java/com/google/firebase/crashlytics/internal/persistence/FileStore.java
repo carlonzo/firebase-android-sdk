@@ -60,12 +60,10 @@ public class FileStore {
   private static final String PRIORITY_REPORTS_PATH = "priority-reports";
   private static final String NATIVE_REPORTS_PATH = "native-reports";
 
-  private final Context context;
-  private final String crashlyticsPath;
+  private final File filesDir;
+  private final File crashlyticsDir;
 
   // Lazily initialized to avoid disk I/O on the main thread.
-  private volatile File filesDir;
-  private volatile File crashlyticsDir;
   private volatile File sessionsDir;
   private volatile File reportsDir;
   private volatile File priorityReportsDir;
@@ -73,11 +71,12 @@ public class FileStore {
   private volatile boolean baseDirPrepared;
 
   public FileStore(Context context) {
-    this.context = context;
-    this.crashlyticsPath =
+    filesDir = context.getFilesDir();
+    String crashlyticsPath =
         useV2FileSystem()
             ? CRASHLYTICS_PATH_V2 + File.pathSeparator + sanitizeName(Application.getProcessName())
             : CRASHLYTICS_PATH_V1;
+    crashlyticsDir = new File(filesDir, crashlyticsPath);
   }
 
   /**
@@ -88,8 +87,6 @@ public class FileStore {
     if (!baseDirPrepared) {
       synchronized (this) {
         if (!baseDirPrepared) {
-          filesDir = context.getFilesDir();
-          crashlyticsDir = new File(filesDir, crashlyticsPath);
           prepareBaseDir(crashlyticsDir);
           sessionsDir = prepareBaseDir(new File(crashlyticsDir, SESSIONS_PATH));
           reportsDir = prepareBaseDir(new File(crashlyticsDir, REPORTS_PATH));
@@ -109,7 +106,6 @@ public class FileStore {
 
   /** Clean up files from previous file systems. */
   public void cleanupPreviousFileSystems() {
-    ensureDirsExist();
     // Clean up pre-versioned file systems.
     cleanupDir(new File(filesDir, ".com.google.firebase.crashlytics"));
     cleanupDir(new File(filesDir, ".com.google.firebase.crashlytics-ndk"));
@@ -136,9 +132,11 @@ public class FileStore {
     return fileOrDirectory.delete();
   }
 
-  /** @return internal File used by Crashlytics, that is not specific to a session */
+  /**
+   * Returns a File reference for a common (non-session) file. This method does not perform disk
+   * I/O and is safe to call from the main thread. The parent directory may not exist yet.
+   */
   public File getCommonFile(String filename) {
-    ensureDirsExist();
     return new File(crashlyticsDir, filename);
   }
 
