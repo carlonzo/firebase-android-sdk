@@ -403,7 +403,7 @@ public class CrashlyticsCore {
 
   /**
    * When a startup crash occurs, Crashlytics must lock on the main thread and complete
-   * initializaiton to upload crash result. 4 seconds is chosen for the lock to prevent ANR
+   * initialization to upload crash result. 4 seconds is chosen for the lock to prevent ANR.
    */
   private void finishInitSynchronously(SettingsProvider settingsProvider) {
 

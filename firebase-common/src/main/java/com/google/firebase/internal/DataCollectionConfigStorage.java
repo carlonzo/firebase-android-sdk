@@ -34,18 +34,40 @@ public class DataCollectionConfigStorage {
       "firebase_data_collection_default_enabled";
 
   private final Context deviceProtectedContext;
-  private final SharedPreferences sharedPreferences;
+  private final String prefsName;
   private final Publisher publisher;
-  private boolean dataCollectionDefaultEnabled;
+
+  // Lazily initialized to avoid disk I/O on the main thread.
+  private volatile SharedPreferences sharedPreferences;
+  private volatile Boolean dataCollectionDefaultEnabled;
 
   public DataCollectionConfigStorage(
       Context applicationContext, String persistenceKey, Publisher publisher) {
     this.deviceProtectedContext = directBootSafe(applicationContext);
-    this.sharedPreferences =
-        deviceProtectedContext.getSharedPreferences(
-            FIREBASE_APP_PREFS + persistenceKey, Context.MODE_PRIVATE);
+    this.prefsName = FIREBASE_APP_PREFS + persistenceKey;
     this.publisher = publisher;
-    this.dataCollectionDefaultEnabled = readAutoDataCollectionEnabled();
+  }
+
+  private SharedPreferences getSharedPreferences() {
+    if (sharedPreferences == null) {
+      synchronized (this) {
+        if (sharedPreferences == null) {
+          sharedPreferences =
+              deviceProtectedContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE);
+        }
+      }
+    }
+    return sharedPreferences;
+  }
+
+  private void ensureInitialized() {
+    if (dataCollectionDefaultEnabled == null) {
+      synchronized (this) {
+        if (dataCollectionDefaultEnabled == null) {
+          dataCollectionDefaultEnabled = readAutoDataCollectionEnabled();
+        }
+      }
+    }
   }
 
   private static Context directBootSafe(Context applicationContext) {
@@ -56,11 +78,12 @@ public class DataCollectionConfigStorage {
   }
 
   public synchronized boolean isEnabled() {
+    ensureInitialized();
     return dataCollectionDefaultEnabled;
   }
 
   private synchronized void updateDataCollectionDefaultEnabled(boolean enabled) {
-    if (dataCollectionDefaultEnabled != enabled) {
+    if (!Boolean.valueOf(enabled).equals(dataCollectionDefaultEnabled)) {
       dataCollectionDefaultEnabled = enabled;
       publisher.publish(
           new Event<>(DataCollectionDefaultChange.class, new DataCollectionDefaultChange(enabled)));
@@ -69,12 +92,12 @@ public class DataCollectionConfigStorage {
 
   public synchronized void setEnabled(Boolean enabled) {
     if (enabled == null) {
-      sharedPreferences.edit().remove(DATA_COLLECTION_DEFAULT_ENABLED).apply();
+      getSharedPreferences().edit().remove(DATA_COLLECTION_DEFAULT_ENABLED).apply();
       updateDataCollectionDefaultEnabled(readManifestDataCollectionEnabled());
 
     } else {
       boolean apiSetting = Boolean.TRUE.equals(enabled);
-      sharedPreferences.edit().putBoolean(DATA_COLLECTION_DEFAULT_ENABLED, apiSetting).apply();
+      getSharedPreferences().edit().putBoolean(DATA_COLLECTION_DEFAULT_ENABLED, apiSetting).apply();
       updateDataCollectionDefaultEnabled(apiSetting);
     }
   }
@@ -99,8 +122,9 @@ public class DataCollectionConfigStorage {
   }
 
   private boolean readAutoDataCollectionEnabled() {
-    if (sharedPreferences.contains(DATA_COLLECTION_DEFAULT_ENABLED)) {
-      return sharedPreferences.getBoolean(DATA_COLLECTION_DEFAULT_ENABLED, true);
+    SharedPreferences prefs = getSharedPreferences();
+    if (prefs.contains(DATA_COLLECTION_DEFAULT_ENABLED)) {
+      return prefs.getBoolean(DATA_COLLECTION_DEFAULT_ENABLED, true);
     }
     return readManifestDataCollectionEnabled();
   }
